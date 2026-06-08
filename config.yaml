@@ -1,19 +1,19 @@
 
-name: "Price portfolio ppo"
+name: "Seed1 gradient"
 
 wandb_mode: "online"
 
-problem: "example"
+problem: "portfolio"
 portfolio_zero_init_seeds: [5, 6, 7]
 
-numpy_seed: 4
+numpy_seed: 5
 load: False
 load_path: 'params/k4g2v0ol.yaml'
 
-device: 'cpu'
+device: 'cuda'
 
 scip:
-  use_standard_solver: false
+  use_standard_solver: true
   verbose: false
 
 scip_brute:
@@ -45,7 +45,7 @@ model:
   penalty_factor: 1000
 
 gym:
-  pf: 1000
+  pf: 30
   noise_std: 1
 
 plotting:

@@ -32,8 +32,6 @@ class Arb_binary(gym.Env):
     
     def step(self,action,gen_noise = False):
         if not self.action_space.contains(action):
-            print(action)
-            print(self.A.shape)
             raise Exception("Action does not belong to action space")
         # Noise = ...
         noise = np.random.normal(0,self.std,self.state.shape)

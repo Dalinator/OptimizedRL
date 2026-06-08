@@ -150,8 +150,6 @@ class PortfolioEnv(gym.Env):
 			if np.allclose(action, rounded_action):
 				action = rounded_action
 		if not self.action_space.contains(action):
-			print(action)
-			print(self.A.shape)
 			raise Exception("Action does not belong to action space")
 		if self.asset_max_position is not None and np.any(action > self.asset_max_position + 1e-9):
 			raise Exception("Action violates per-asset max position")

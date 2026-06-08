@@ -1,5 +1,6 @@
 
 import numpy as np
+import os
 import torch
 from pathlib import Path
 from src.gym_envs import example_env
@@ -59,9 +60,6 @@ def build_solver(config):
 def resolve_runtime_device(configured_device):
     device = str(configured_device).strip().lower()
     if device.startswith("cuda") and not torch.cuda.is_available():
-        print(
-            f"[device] requested='{configured_device}' but CUDA is unavailable in this PyTorch build; falling back to 'cpu'"
-        )
         return "cpu"
     return device
 
@@ -82,28 +80,7 @@ def _empirical_cvar(losses, alpha):
 
 
 def _print_run_diagnostics(problem_name, step, diagnostics):
-    reward_mean = _safe_mean(diagnostics["reward_sum"], diagnostics["step_count"])
-    reward_var = _safe_mean(diagnostics["reward_sq_sum"], diagnostics["step_count"]) - reward_mean ** 2
-    reward_std = float(np.sqrt(max(reward_var, 0.0)))
-    episode_reward_mean = _safe_mean(diagnostics["episode_reward_sum"], diagnostics["episode_count"])
-    economic_reward_mean = _safe_mean(diagnostics["economic_reward_sum"], diagnostics["step_count"])
-    economic_episode_reward_mean = _safe_mean(diagnostics["economic_episode_reward_sum"], diagnostics["episode_count"])
-    episode_length_mean = _safe_mean(diagnostics["episode_length_sum"], diagnostics["episode_count"])
-    no_action_rate = _safe_mean(diagnostics["no_action_count"], diagnostics["step_count"])
-    turnover_mean = _safe_mean(diagnostics["turnover_sum"], diagnostics["step_count"])
-    risk_utilization_mean = _safe_mean(diagnostics["risk_utilization_sum"], diagnostics["step_count"])
-    empirical_cvar_mean = _safe_mean(diagnostics["empirical_cvar_sum"], diagnostics["step_count"])
-
-    print(
-        "[diagnostic] "
-        f"problem={problem_name} steps={step} episodes={diagnostics['episode_count']} "
-        f"reward_mean={reward_mean:.3f} reward_std={reward_std:.3f} "
-        f"ep_reward_mean={episode_reward_mean:.3f} ep_len_mean={episode_length_mean:.3f} "
-        f"economic_reward_mean={economic_reward_mean:.3f} "
-        f"economic_ep_reward_mean={economic_episode_reward_mean:.3f} "
-        f"no_action_rate={no_action_rate:.3f} turnover_mean={turnover_mean:.3f} "
-        f"risk_utilization_mean={risk_utilization_mean:.3f} empirical_cvar_mean={empirical_cvar_mean:.4f}"
-    )
+    return None
 
 
 def sanitize_env_action(env, action):
@@ -300,7 +277,7 @@ def main():
     portfolio_zero_init_seeds = set(config.get("portfolio_zero_init_seeds", [5, 6, 7]))
     force_portfolio_zero_init = problem_name == "portfolio" and configured_seed in portfolio_zero_init_seeds
 
-    terminal_log_every = int(config.get("terminal_log_every", 1000))
+    diagnostic_window = max(1, int(config.get("terminal_log_every", 1000)))
 
     # Init problem
     state_size = config["model"]["state_size"]
@@ -326,7 +303,6 @@ def main():
     bounds = [(0,action_ub) for _ in range(len(c))]
     integer = [1 for _ in range(len(c))]
     c_model = -np.random.uniform(0,10,size = (1,)) * np.ones((action_size,))
-    print(c_model)
     A = np.random.uniform(0,.1,size = (state_size,state_size))
     B = np.random.uniform(0,1,size = (state_size,action_size))
 
@@ -346,11 +322,9 @@ def main():
         D = np.zeros((num_cons, action_size))
         E = np.full((num_cons,), 1e6)
         c_model = np.zeros((action_size,))
-        print(f"[portfolio] forcing deterministic zero-init for seed={configured_seed}")
 
     load = config["load"]
     if load:
-        print("loading params instead of generating random...")
         load_path = Path(config["load_path"])
         if not load_path.is_absolute():
             load_path = project_root / load_path
@@ -499,12 +473,15 @@ def main():
     if hasattr(m, "update_prices") and hasattr(gym_model, "prices"):
         m.update_prices(gym_model.prices)
 
+    os.environ.setdefault("WANDB_SILENT", "true")
+    os.environ.setdefault("WANDB_CONSOLE", "off")
     run = wandb.init(name = config["name"],mode = config["wandb_mode"],config = config)
 
 
     window_size = config["plotting"]["window_size"]
     training_cfg = config.get("training", {})
     algorithm = training_cfg.get("algorithm", "vanilla_gradient").lower()
+    solver_name = str(training_cfg.get("solver", "scip")).strip().lower()
     if algorithm not in ["vanilla_gradient", "ppo"]:
         raise ValueError(
             "training.algorithm must be either 'vanilla_gradient' or 'ppo'. "
@@ -560,6 +537,7 @@ def main():
             normalize_rewards=bool(ppo_cfg.get("normalize_rewards", True)),
             reward_norm_eps=float(ppo_cfg.get("reward_norm_eps", 1e-8)),
             reward_clip=ppo_cfg.get("reward_clip", None),
+            nn_sample=bool(ppo_cfg.get("nn_sample", config.get("actor", {}).get("nn_sample", True))),
             device=runtime_device,
         )
 
@@ -596,8 +574,6 @@ def main():
 
     T = config["explicit_sol_time"]
     fathomed_counter = 0
-    print(m.c)
-    print(gym_model.state)
     ep_length = 0
 
     comp_expected = config["comp_expected"]
@@ -670,10 +646,10 @@ def main():
                     mismatch_l2 = float(np.linalg.norm(chosen_action_raw - executed_action))
                     recent_action_mismatch.append(mismatch)
                     recent_action_mismatch_l2.append(mismatch_l2)
-                    if len(recent_action_mismatch) > terminal_log_every:
-                        recent_action_mismatch = recent_action_mismatch[-terminal_log_every:]
-                    if len(recent_action_mismatch_l2) > terminal_log_every:
-                        recent_action_mismatch_l2 = recent_action_mismatch_l2[-terminal_log_every:]
+                    if len(recent_action_mismatch) > diagnostic_window:
+                        recent_action_mismatch = recent_action_mismatch[-diagnostic_window:]
+                    if len(recent_action_mismatch_l2) > diagnostic_window:
+                        recent_action_mismatch_l2 = recent_action_mismatch_l2[-diagnostic_window:]
 
             old_state_for_buffer = np.asarray(state).copy()
             state,reward,terminated,_,info = gym_model.step(action)
@@ -725,8 +701,8 @@ def main():
                         "old_logp": float(act_info["old_logp"]),
                     }
                 )
-                if len(recent_ppo_samples) > terminal_log_every:
-                    recent_ppo_samples = recent_ppo_samples[-terminal_log_every:]
+                if len(recent_ppo_samples) > diagnostic_window:
+                    recent_ppo_samples = recent_ppo_samples[-diagnostic_window:]
 
             ep_reward += reward
             economic_ep_reward += economic_reward
@@ -736,10 +712,10 @@ def main():
             diagnostics["reward_sq_sum"] += reward ** 2
             recent_rewards.append(float(reward))
             recent_n_sols.append(float(n_sols))
-            if len(recent_rewards) > terminal_log_every:
-                recent_rewards = recent_rewards[-terminal_log_every:]
-            if len(recent_n_sols) > terminal_log_every:
-                recent_n_sols = recent_n_sols[-terminal_log_every:]
+            if len(recent_rewards) > diagnostic_window:
+                recent_rewards = recent_rewards[-diagnostic_window:]
+            if len(recent_n_sols) > diagnostic_window:
+                recent_n_sols = recent_n_sols[-diagnostic_window:]
             run.log({
                 "reward" : reward,
                 "economic_reward": economic_reward,
@@ -749,79 +725,6 @@ def main():
                 "risk_utilization": risk_utilization,
                 "empirical_cvar": empirical_cvar,
             })
-
-            if terminal_log_every > 0 and iter_counter % terminal_log_every == 0:
-                _print_run_diagnostics(problem_name, iter_counter, diagnostics)
-                aA_delta = np.sum((aA - m.aA) ** 2)
-                aB_delta = np.sum((aB - m.aB) ** 2)
-                b_delta = np.sum((b - m.b) ** 2)
-                avg_step_reward = float(np.mean(recent_rewards)) if len(recent_rewards) > 0 else np.nan
-                min_step_reward = float(np.min(recent_rewards)) if len(recent_rewards) > 0 else np.nan
-                max_step_reward = float(np.max(recent_rewards)) if len(recent_rewards) > 0 else np.nan
-                avg_n_sols = float(np.mean(recent_n_sols)) if len(recent_n_sols) > 0 else np.nan
-                action_mismatch_rate = float(np.mean(recent_action_mismatch)) if len(recent_action_mismatch) > 0 else np.nan
-                action_mismatch_l2_mean = float(np.mean(recent_action_mismatch_l2)) if len(recent_action_mismatch_l2) > 0 else np.nan
-                state_norm = float(np.linalg.norm(np.asarray(state).reshape(-1)))
-                has_nan_state = bool(np.isnan(np.asarray(state)).any())
-                ppo_stats = {}
-                if algorithm == "ppo" and len(recent_ppo_samples) > 0:
-                    theta_now = ppo_agent.theta.detach().cpu().numpy().astype(np.float32)
-                    ppo_stats = compute_ppo_linearization_stats(recent_ppo_samples, theta_now)
-                print(
-                    "[debug] "
-                    f"step={iter_counter} "
-                    f"alg={algorithm} "
-                    f"ep_reward={ep_reward:.4f} "
-                    f"ep_len={ep_length} "
-                    f"reward_mean_last={avg_step_reward:.4f} "
-                    f"reward_min_last={min_step_reward:.4f} "
-                    f"reward_max_last={max_step_reward:.4f} "
-                    f"avg_n_sols={avg_n_sols:.2f} "
-                    f"action_mismatch_rate={action_mismatch_rate:.4f} "
-                    f"action_mismatch_l2={action_mismatch_l2_mean:.4f} "
-                    f"state_norm={state_norm:.4f} "
-                    f"state_has_nan={has_nan_state} "
-                    f"aA_change={aA_delta:.6f} "
-                    f"aB_change={aB_delta:.6f} "
-                    f"b_change={b_delta:.6f}"
-                )
-                if len(ppo_stats) > 0:
-                    print(
-                        "[debug-ppo] "
-                        f"step={iter_counter} "
-                        f"lin_obj_mae={ppo_stats['lin_obj_mae']:.6f} "
-                        f"lin_obj_max_abs={ppo_stats['lin_obj_max_abs']:.6f} "
-                        f"lin_obj_chosen_shift_mean={ppo_stats['lin_obj_chosen_shift_mean']:.6f} "
-                        f"lin_obj_argmin_match={ppo_stats['lin_obj_argmin_match']:.4f} "
-                        f"theta_delta_ref_norm_mean={ppo_stats['theta_delta_ref_norm_mean']:.6f} "
-                        f"theta_delta_ref_norm_max={ppo_stats['theta_delta_ref_norm_max']:.6f} "
-                        f"chosen_theta_grad_norm_mean={ppo_stats['chosen_theta_grad_norm_mean']:.6f} "
-                        f"pool_theta_grad_norm_mean={ppo_stats['pool_theta_grad_norm_mean']:.6f}"
-                    )
-                if algorithm == "ppo" and len(recent_ppo_samples) > 0:
-                    exactness_samples = int(config.get("ppo", {}).get("exactness_max_samples", 8))
-                    exact_stats = compute_ppo_exactness_stats(
-                        recent_ppo_samples,
-                        ppo_agent,
-                        m,
-                        solver,
-                        max_samples=exactness_samples,
-                    )
-                    if len(exact_stats) > 0:
-                        print(
-                            "[debug-ppo-exactness] "
-                            f"step={iter_counter} "
-                            f"n={int(exact_stats['n_samples'])} "
-                            f"argmin_action_match={exact_stats['argmin_action_match_rate']:.4f} "
-                            f"best_obj_abs_gap={exact_stats['best_obj_abs_gap_mean']:.6f} "
-                            f"logp_abs_err={exact_stats['logp_abs_err_mean']:.6f} "
-                            f"ratio_abs_err={exact_stats['ratio_abs_err_mean']:.6f} "
-                            f"ratio_corr={exact_stats['ratio_corr']:.6f} "
-                            f"matched_action_l2={exact_stats['matched_action_l2_mean']:.6f}"
-                        )
-
-
-
 
             if terminated or i == rollout_iters-1:
                 ep_rewards.append(ep_reward)
@@ -895,50 +798,6 @@ def main():
         for k, v in ppo_metrics.items():
             metrics[f"ppo_{k}"] = v
         run.log(metrics)
-
-        if terminal_log_every > 0 and iter_counter % terminal_log_every == 0:
-            print(
-                "[debug-update] "
-                f"step={iter_counter} "
-                f"alg={algorithm} "
-                f"pol_grad_norm={pol_grad_norm:.6f} "
-                f"c_diff={c_diff:.6f} "
-                f"aA_change={aA_change:.6f} "
-                f"aB_change={aB_change:.6f} "
-                f"b_change={b_change:.6f}"
-            )
-            if algorithm == "ppo" and len(ppo_invariance_stats) > 0:
-                print(
-                    "[debug-ppo-invariance] "
-                    f"step={iter_counter} "
-                    f"grad_parallelism={ppo_invariance_stats['grad_parallelism_mean']:.6f} "
-                    f"policy_shift_std={ppo_invariance_stats['policy_shift_std_mean']:.6f}"
-                )
-            if algorithm == "ppo" and len(ppo_metrics) > 0:
-                print(
-                    "[debug-ppo-update] "
-                    f"step={iter_counter} "
-                    f"adv_mean={ppo_metrics.get('adv_mean', 0.0):.6f} "
-                    f"adv_std={ppo_metrics.get('adv_std', 0.0):.6f} "
-                    f"adv_snr={ppo_metrics.get('adv_snr', 0.0):.6f} "
-                    f"adv_abs_mean={ppo_metrics.get('adv_abs_mean', 0.0):.6f} "
-                    f"adv_p10={ppo_metrics.get('adv_p10', 0.0):.6f} "
-                    f"adv_p50={ppo_metrics.get('adv_p50', 0.0):.6f} "
-                    f"adv_p90={ppo_metrics.get('adv_p90', 0.0):.6f} "
-                    f"adv_pos_ratio={ppo_metrics.get('adv_pos_ratio', 0.0):.6f} "
-                    f"value_explained_var={ppo_metrics.get('value_explained_variance', 0.0):.6f} "
-                    f"surrogate_unclipped={ppo_metrics.get('surrogate_unclipped', 0.0):.6f} "
-                    f"surrogate_clipped={ppo_metrics.get('surrogate_clipped', 0.0):.6f} "
-                    f"surrogate_clip_gap={ppo_metrics.get('surrogate_clip_gap', 0.0):.6f} "
-                    f"clip_fraction={ppo_metrics.get('clip_fraction', 0.0):.6f} "
-                    f"approx_kl={ppo_metrics.get('approx_kl', 0.0):.6f} "
-                    f"adv_returns_corr={ppo_metrics.get('adv_returns_corr', 0.0):.6f} "
-                    f"td_error_mean={ppo_metrics.get('td_error_mean', 0.0):.6f} "
-                    f"td_error_std={ppo_metrics.get('td_error_std', 0.0):.6f} "
-                    f"theta_update_norm={ppo_metrics.get('theta_update_norm', 0.0):.6f} "
-                    f"update_action_mismatch_rate={ppo_metrics.get('action_mismatch_rate', 0.0):.6f} "
-                    f"update_action_mismatch_l2={ppo_metrics.get('action_mismatch_l2_mean', 0.0):.6f}"
-                )
 
 
 def formulate_lp_with_initial_state(c, A, B, D, E, F, T, s_initial):

@@ -14,6 +14,8 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
+from src.utils.policy import knn_branch_sample, naive_branch_sample
+
 
 def _as_state_tensor(state: np.ndarray, device: torch.device) -> torch.Tensor:
     state_arr = np.asarray(state, dtype=np.float32).reshape(-1)
@@ -185,6 +187,7 @@ class PPOMILPAgent:
         normalize_rewards: bool = True,
         reward_norm_eps: float = 1e-8,
         reward_clip: Optional[float] = None,
+        nn_sample: bool = True,
         device: str = "cpu",
     ):
         self.model = model
@@ -206,6 +209,7 @@ class PPOMILPAgent:
         self.reward_norm_eps = float(reward_norm_eps)
         self.reward_clip = None if reward_clip is None else float(reward_clip)
         self.policy_beta = float(policy_beta)
+        self.nn_sample = bool(nn_sample)
         self.device = torch.device(device)
 
         aA0, aB0, b0 = self._get_model_param_arrays()
@@ -343,6 +347,11 @@ class PPOMILPAgent:
 
         chosen = sol_pool[action_idx]
         action = chosen["x"][self.model.get_desc_var_indices()]
+        if chosen.get("fathomed"):
+            if self.nn_sample:
+                action, _ = knn_branch_sample(action, chosen["bounds"])
+            else:
+                action, _ = naive_branch_sample(action, chosen["bounds"])
 
         actions = [np.asarray(sol["x"][self.model.get_desc_var_indices()], dtype=np.float32) for sol in sol_pool]
         ineq_margs = [np.asarray(sol.get("ineqlin", []), dtype=np.float32) for sol in sol_pool]

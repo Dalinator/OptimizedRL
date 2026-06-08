@@ -1,4 +1,4 @@
-from src.utils.policy import policy_dist,nabla_log_pi,categorical,naive_branch_sample,nn_branch_sample,nn_branch_sample_only_keep_ints,naive_branch_sample_only_keep_ints, policy_dist_torch,policy_dist_np,nabla_log_pi_stable
+from src.utils.policy import policy_dist,nabla_log_pi,categorical,knn_branch_sample,naive_branch_sample,nn_branch_sample_only_keep_ints,naive_branch_sample_only_keep_ints, policy_dist_torch,policy_dist_np,nabla_log_pi_stable
 from src.utils.q_table import train_q_table
 from tqdm import tqdm
 import numpy as np
@@ -74,9 +74,7 @@ def check_corr_grad(obj_vals,nab,beta,lag_grads,draw): # This doesnt work with s
     log_pol = torch.log(pol)
     log_pol[draw].backward() # dpi/dphi
     grad_log_pol = obj_vals_torch.grad
-    expected =  grad_log_pol @ lag_grads
-    # print(draw)
-    # print(nab - expected.detach().numpy())
+    expected = grad_log_pol @ torch.as_tensor(lag_grads, dtype=grad_log_pol.dtype)
     assert np.linalg.norm(nab - expected.detach().numpy()) < 1e-6
 
 
@@ -118,10 +116,7 @@ def check_with_cvxpylayers(node,bounds,lag_grad,drawn_x,state):
             or not all(torch.abs(b_ub_b.grad[:7] + lag_grad[-7:]) < 1e-3) 
             or not all(torch.abs((b_ub_b.grad[:7].unsqueeze(0).T @ torch.tensor(state,dtype = torch.double).unsqueeze(0)).flatten() + lag_grad[3:45]) < 1e-3)
         ):
-        print("CVXPY check failed with")
-        print("c_b_grad is: ",c_b.grad[:3])
-        print("Lag_grad is: ",lag_grad[:3])
-        print("x is: ", drawn_x)
+        pass
     true_grad = torch.hstack((c_b.grad[:3],A_ub_b.grad[:7,:3].flatten(),-b_ub_b.grad[:7],-(b_ub_b.grad[:7].unsqueeze(0).T @ torch.tensor(state,dtype = torch.double).unsqueeze(0)).flatten()))
     return true_grad
     
@@ -179,7 +174,7 @@ class Actor:
         # Sample unexplored nodes
         if chosen_sol["fathomed"]:
             if self.nn_sample:
-                action,bounds = nn_branch_sample(chosen_sol['x'][self.desc_vars],bounds)
+                action,bounds = knn_branch_sample(chosen_sol['x'][self.desc_vars],bounds)
             else:
                 action,bounds = naive_branch_sample(chosen_sol['x'][self.desc_vars],bounds)
 
@@ -250,9 +245,6 @@ class Actor:
 
 
             qualities = self.critic.evaluate(actions,states,rewards,nxt_states)
-            
-            if np.all(qualities == 0):
-                print("whaa")
 
             pol_grad = ((nabs.T @ qualities)/len(rewards)).squeeze()
             if self.v is None:

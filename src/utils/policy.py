@@ -298,7 +298,6 @@ def nabla_log_pi_stable(action_taken_object_grad, obj_vals, obj_grads, beta=1):
          # Or if all obj_vals are -inf.
          # A simple approach might be uniform probability, but the gradient is complex.
          # Returning zero might be a safe fallback if this state is unexpected.
-         print("Warning: Sum of exponentials is zero in nabla_log_pi_stable.")
          # The gradient contribution from the expectation term would be ill-defined.
          # We might approximate as only the action_taken gradient matters.
          # return -beta * action_taken_object_grad # This corresponds to pi_k=1
@@ -342,13 +341,4 @@ def nabla_log_pi_stable(action_taken_object_grad, obj_vals, obj_grads, beta=1):
 
 
 if __name__ == '__main__':
-    obj_vals = np.random.uniform(1e4,4e4,(5,))
-    pol = policy_dist(obj_vals=obj_vals,beta = 0.5)
-    print(pol)
-    pol = policy_dist_np(obj_vals=obj_vals,beta = 0.5)
-    print(pol)
-    lag_grads = np.random.uniform(1,10,(5,3))
-    nab = nabla_log_pi_stable(lag_grads[0,:],obj_vals,lag_grads,0.5)
-    print(nab)
-    nab = nabla_log_pi(lag_grads[0,:],obj_vals,lag_grads,0.5)
-    print(nab)
+    pass
