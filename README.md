@@ -12,4 +12,4 @@ See train.py for an example.
 ## Additional Code
 
 The original thesis has had additional work done. The addition is the KNN
-algorithms found in policy.py and is marked.
+algorithms, example 2 and PPO algorithm.
